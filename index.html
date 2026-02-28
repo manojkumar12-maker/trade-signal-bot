@@ -501,8 +501,19 @@
         }
 
         function recordSignal(signal) {
+            // Check if signal already exists (within last 30 minutes)
+            const recentExists = state.performance.signals.some(s => 
+                s.symbol === signal.symbol && 
+                s.direction === signal.direction && 
+                s.result === 'pending' &&
+                (Date.now() - s.timestamp) < 30 * 60 * 1000
+            );
+            
+            if (recentExists) return;
+            
             state.performance.signals.push({
                 ...signal,
+                entryPrice: signal.entry,
                 timestamp: Date.now(),
                 result: 'pending'
             });
@@ -1034,6 +1045,62 @@
             }
         }
 
+        async function checkPendingSignals(prices) {
+            let updated = false;
+            
+            for (let i = 0; i < state.performance.signals.length; i++) {
+                const signal = state.performance.signals[i];
+                if (signal.result !== 'pending') continue;
+                
+                const symbol = signal.symbol + 'USDT';
+                const currentPrice = prices[symbol]?.price;
+                
+                if (!currentPrice) continue;
+                
+                const isLong = signal.direction === 'LONG';
+                
+                // Check if SL or TP hit
+                let result = null;
+                
+                if (isLong) {
+                    if (currentPrice >= signal.takeProfit) {
+                        result = 'win';
+                    } else if (currentPrice <= signal.stopLoss) {
+                        result = 'loss';
+                    }
+                } else {
+                    if (currentPrice <= signal.takeProfit) {
+                        result = 'win';
+                    } else if (currentPrice >= signal.stopLoss) {
+                        result = 'loss';
+                    }
+                }
+                
+                if (result) {
+                    signal.result = result;
+                    signal.closePrice = currentPrice;
+                    signal.closeTime = Date.now();
+                    signal.profit = result === 'win' ? signal.riskReward : -1;
+                    
+                    if (result === 'win') {
+                        state.performance.wins++;
+                        state.performance.totalRR += signal.riskReward;
+                    } else {
+                        state.performance.losses++;
+                        state.performance.totalRR -= 1;
+                    }
+                    
+                    updated = true;
+                    console.log(`Signal ${signal.symbol} ${signal.direction}: ${result.toUpperCase()} at $${currentPrice}`);
+                }
+            }
+            
+            if (updated) {
+                savePerformance();
+                updatePerformanceDisplay();
+            }
+        }
+
         async function scanMarkets() {
             const container = document.getElementById('signalsContainer');
             container.innerHTML = '<div class="loading"><div class="spinner"></div><div class="loading-text">Analyzing market structure...</div></div>';
@@ -1046,6 +1113,9 @@
             }
             
             updateMarketBias(prices);
+
+            // Check and update pending signals automatically
+            await checkPendingSignals(prices);
 
             const liquidPairs = PAIRS.filter(p => prices[p]?.volume > 0);
             
